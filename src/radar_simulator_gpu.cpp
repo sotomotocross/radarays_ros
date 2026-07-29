@@ -24,30 +24,23 @@
 #include <radarays_ros/image_algorithms.h>
 #include <radarays_ros/radar_algorithms.h>
 
-#include <rmagine/simulation/OnDnSimulatorEmbree.hpp>
-#include <radarays_ros/RadarCPU.hpp>
+#include <rmagine/map/OptixMap.hpp>
+#include <radarays_ros/RadarGPU.hpp>
 
 
 using namespace radarays_ros;
 
 namespace rm = rmagine;
 
-// serve_action mode: GetRadarParams service + GenRadarImage action server,
-// request-driven instead of continuous-publish. Kept mutually exclusive with
-// the free-running/sync_topic loop below -- both would call
-// radarays_sim->simulate() from different threads on the same Radar object
-// otherwise (Radar isn't built to be thread-safe against itself). Mirrors
-// Classic's main_publisher vs main_action_server being alternate main()
-// entry points, never run together.
-//
-// The accepted-goal callback only *queues* the goal -- it must not call
-// simulate() directly. RadarCPU::simulate() itself calls
-// rclcpp::spin_some(m_node) when include_motion is set (the default), and
-// that call would be reentrant if simulate() ran from inside a callback
-// already dispatched by an active spin/spin_some on the same node (rclcpp
-// throws "Node has already been added to an executor"). Draining the queue
-// happens in main()'s own loop, between spin_some() calls, same as the
-// existing free-running publish loop already does safely.
+// GPU counterpart of radar_simulator.cpp, including its serve_action mode
+// (see that file's own comments for the full rationale/history -- ported
+// here for parity, previously missing on the GPU executable). RadarGPU's
+// simulate() has no internal rclcpp::spin_some() call (confirmed by
+// inspection -- unlike RadarCPU, no include_motion continuation logic),
+// so the executor-reentrancy bug that required queuing goals on the CPU
+// side doesn't actually apply here; the same queue-and-drain pattern is
+// used anyway for consistency between the two files and to stay safe if
+// RadarGPU ever grows similar motion-continuation logic later.
 class GenRadarImageServer
 {
 public:
@@ -84,7 +77,6 @@ public:
             });
     }
 
-    // Called from main()'s loop, never from within an active spin_some().
     void processPendingGoal()
     {
         if(!pending_goal_)
@@ -120,9 +112,9 @@ int main(int argc, char** argv)
 {
     rclcpp::init(argc, argv);
 
-    std::cout << "STARTING RADAR SIMULATOR" << std::endl;
+    std::cout << "STARTING RADAR SIMULATOR (GPU)" << std::endl;
 
-    auto node = std::make_shared<rclcpp::Node>("radar_simulator");
+    auto node = std::make_shared<rclcpp::Node>("radar_simulator_gpu");
 
     // setting up tf
     auto tf_buffer = std::make_shared<tf2_ros::Buffer>(node->get_clock());
@@ -134,13 +126,6 @@ int main(int argc, char** argv)
     node->declare_parameter("sync_topic", std::string(""));
     node->declare_parameter("publish_rate", 100.0);
     node->declare_parameter("serve_action", false);
-    // Classic's main() read a `gpu` param and dispatched to RadarCPU or
-    // RadarGPU from this same executable; the ROS 2 port split GPU out
-    // into a separate `radar_simulator_gpu` executable instead (see
-    // MIGRATION.md), so this node has no way to actually honor `gpu:=true`
-    // -- declared here only so an old launch file/params file setting it
-    // fails loudly instead of silently running on the CPU anyway.
-    node->declare_parameter("gpu", false);
 
     const std::string map_file = node->get_parameter("map_file").as_string();
     const std::string map_frame = node->get_parameter("map_frame").as_string();
@@ -152,27 +137,16 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    if(node->get_parameter("gpu").as_bool())
-    {
-        RCLCPP_ERROR(node->get_logger(),
-            "gpu:=true was passed to radar_simulator, but this executable is "
-            "CPU/Embree-only -- GPU/OptiX is a separate executable in this "
-            "ROS 2 port. Run radar_simulator_gpu instead (see MIGRATION.md, "
-            "\"Known Gaps vs the ROS 1 (noetic) Branch\").");
-        return 1;
-    }
+    rm::OptixMapPtr map_gpu = rm::import_optix_map(map_file);
 
-    // CPU / Embree only for now -- GPU/OptiX parity is deferred workspace-wide.
-    rm::EmbreeMapPtr map_cpu = rm::import_embree_map(map_file);
-
-    std::cout << "RadarCPU" << std::endl;
-    RadarPtr radarays_sim = std::make_shared<RadarCPU>(
+    std::cout << "RadarGPU" << std::endl;
+    RadarPtr radarays_sim = std::make_shared<RadarGPU>(
         node,
         tf_buffer,
         tf_listener,
         map_frame,
         sensor_frame,
-        map_cpu
+        map_gpu
     );
 
     if(node->get_parameter("serve_action").as_bool())
@@ -201,16 +175,6 @@ int main(int argc, char** argv)
     {
         std::cout << "SYNC SIMULATIONS WITH TOPIC " << sync_topic << std::endl;
 
-        // The subscription callback only queues the latest sync stamp --
-        // it must not call simulate() directly. RadarCPU::simulate()
-        // itself calls rclcpp::spin_some(m_node) when include_motion is
-        // set (the default), which is reentrant (and throws "Node has
-        // already been added to an executor") if simulate() runs from
-        // inside a callback already dispatched by an active
-        // spin()/spin_some() on the same node -- exactly what a blocking
-        // rclcpp::spin(node) here would do. Same fix as the serve_action
-        // path above: drain the queued stamp from a manual polling loop,
-        // between spin_some() calls, never from within one.
         std::optional<rclcpp::Time> pending_stamp;
         auto sub = node->create_subscription<sensor_msgs::msg::Image>(
             sync_topic, 1,
