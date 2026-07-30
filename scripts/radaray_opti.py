@@ -35,6 +35,13 @@ mulran_radar_to_bag):
     --server-node-name radar_simulator --sync-topic /Navtech/Polar \\
     --material-index 1 --maxiter 30 --popsize 10 \\
     --output /tmp/optimized_params.yaml
+
+--material-index accepts more than one index (e.g. `--material-index 1 2`)
+to tune several materials' 4 properties simultaneously in one
+differential_evolution run -- proven against testdata/two_walls_test.dae
+(see MIGRATION_HANDOFF.md), a synthetic 2-object scene built specifically
+because no real available scene has more than one distinctly-labeled
+material to exercise this with.
 """
 
 import argparse
@@ -61,18 +68,22 @@ PARAM_NAMES = ["velocity", "ambient", "diffuse", "specular"]
 PARAM_BOUNDS = [(0.0, 0.3), (0.0, 1.0), (0.0, 1.0), (0.0, 5000.0)]
 
 
-def to_param_vec(params: RadarParams, material_index: int):
-    mat = params.materials.data[material_index]
-    return np.array([mat.velocity, mat.ambient, mat.diffuse, mat.specular])
+def to_param_vec(params: RadarParams, material_indices):
+    vecs = []
+    for idx in material_indices:
+        mat = params.materials.data[idx]
+        vecs.append([mat.velocity, mat.ambient, mat.diffuse, mat.specular])
+    return np.array(vecs).flatten()
 
 
-def vec_to_params(params_init: RadarParams, param_vec, material_index: int) -> RadarParams:
+def vec_to_params(params_init: RadarParams, param_vec, material_indices) -> RadarParams:
     params_out = params_init
-    mat = params_out.materials.data[material_index]
-    mat.velocity = float(param_vec[0])
-    mat.ambient = float(param_vec[1])
-    mat.diffuse = float(param_vec[2])
-    mat.specular = float(param_vec[3])
+    for i, idx in enumerate(material_indices):
+        mat = params_out.materials.data[idx]
+        mat.velocity = float(param_vec[4 * i + 0])
+        mat.ambient = float(param_vec[4 * i + 1])
+        mat.diffuse = float(param_vec[4 * i + 2])
+        mat.specular = float(param_vec[4 * i + 3])
     return params_out
 
 
@@ -155,6 +166,13 @@ class RadarayOpti(Node):
         return future.result().params
 
     def simulate(self, params: RadarParams, timeout_sec: float = 10.0) -> np.ndarray:
+        # A long optimizer run (thousands of goal/result round-trips) can
+        # occasionally log "Ignoring unexpected result response... more
+        # than one action server" from rclpy itself -- this is expected,
+        # benign upstream behavior (rclpy/action/client.py's execute(),
+        # confirmed by reading its source), a late-arriving duplicate
+        # response for an already-resolved request under real DDS timing,
+        # not a bug in this script. Safe to ignore.
         if not self.action_client.wait_for_server(timeout_sec=timeout_sec):
             raise RuntimeError(
                 f"gen_radar_image action server not available (is {self.server_node_name} running with serve_action:=true?)")
@@ -177,7 +195,7 @@ class RadarayOpti(Node):
 
 def run_optimizer(
     node: RadarayOpti,
-    material_index: int,
+    material_indices,
     maxiter: int,
     popsize: int,
     seed,
@@ -186,12 +204,15 @@ def run_optimizer(
     real_image = node.wait_for_real_image(timeout_sec=30.0)
     params_init = node.fetch_initial_params()
 
-    node.get_logger().info(f"Optimizing materials.data[{material_index}] (velocity/ambient/diffuse/specular)")
-    node.get_logger().info(f"Initial value: {to_param_vec(params_init, material_index)}")
+    param_names = [f"mat{idx}_{name}" for idx in material_indices for name in PARAM_NAMES]
+    param_bounds = PARAM_BOUNDS * len(material_indices)
+
+    node.get_logger().info(f"Optimizing materials.data{material_indices} (velocity/ambient/diffuse/specular each)")
+    node.get_logger().info(f"Initial value: {to_param_vec(params_init, material_indices)}")
 
     # Sanity check with the initial (un-optimized) params before spending
     # the optimizer's budget, so a broken pipeline (materials_file with no
-    # object_materials pointing at material_index, action server down,
+    # object_materials pointing at material_indices, action server down,
     # etc) fails fast with a clear score printed, not silently inside the
     # first differential_evolution population.
     baseline_image = node.simulate(params_init)
@@ -202,7 +223,7 @@ def run_optimizer(
     iteration = {"count": 0}
 
     def objective(param_vec):
-        params = vec_to_params(params_init, param_vec, material_index)
+        params = vec_to_params(params_init, param_vec, material_indices)
         try:
             sim_image = node.simulate(params)
         except (RuntimeError, TimeoutError) as ex:
@@ -221,7 +242,7 @@ def run_optimizer(
     node.get_logger().info(f"Running differential_evolution: maxiter={maxiter}, popsize={popsize}")
     result = differential_evolution(
         objective,
-        PARAM_BOUNDS,
+        param_bounds,
         maxiter=maxiter,
         popsize=popsize,
         seed=seed,
@@ -233,18 +254,21 @@ def run_optimizer(
 
     best_score = -result.fun
     node.get_logger().info(f"Done. Best score: {best_score:.4f} (baseline was {baseline_score:.4f})")
-    node.get_logger().info(f"Best params: {dict(zip(PARAM_NAMES, result.x.tolist()))}")
+    node.get_logger().info(f"Best params: {dict(zip(param_names, result.x.tolist()))}")
 
-    return result, baseline_score
+    return result, baseline_score, param_names
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--server-node-name", default="radar_simulator")
     parser.add_argument("--sync-topic", default="/Navtech/Polar")
-    parser.add_argument("--material-index", type=int, default=1,
-                         help="Index into materials.data to optimize (default 1, the real/non-air material "
-                              "in config/mulran_optimizer_materials.yaml)")
+    parser.add_argument("--material-index", type=int, nargs="+", default=[1],
+                         help="One or more indices into materials.data to optimize simultaneously "
+                              "(default [1], the real/non-air material in "
+                              "config/mulran_optimizer_materials.yaml). Each index adds its own "
+                              "velocity/ambient/diffuse/specular to the optimization problem, e.g. "
+                              "`--material-index 1 2` tunes 8 parameters at once.")
     parser.add_argument("--maxiter", type=int, default=30)
     parser.add_argument("--popsize", type=int, default=10)
     parser.add_argument("--seed", type=int, default=None)
@@ -255,17 +279,17 @@ def main(argv=None):
     rclpy.init()
     node = RadarayOpti(args.server_node_name, args.sync_topic)
     try:
-        result, baseline_score = run_optimizer(
+        result, baseline_score, param_names = run_optimizer(
             node, args.material_index, args.maxiter, args.popsize, args.seed, args.score_log)
     finally:
         node.destroy_node()
         rclpy.shutdown()
 
     with open(args.output, "w") as f:
-        f.write(f"# radaray_opti.py result -- materials.data[{args.material_index}]\n")
+        f.write(f"# radaray_opti.py result -- materials.data{args.material_index}\n")
         f.write(f"# baseline_score: {baseline_score:.4f}\n")
         f.write(f"# best_score: {-result.fun:.4f}\n")
-        for name, value in zip(PARAM_NAMES, result.x.tolist()):
+        for name, value in zip(param_names, result.x.tolist()):
             f.write(f"{name}: {value}\n")
     print(f"Wrote result to {args.output}")
     return 0

@@ -533,7 +533,14 @@ own process needs killing by its *child's* PID, not the wrapper's.
 
 - `mesh_publisher.cpp` — already unbuilt before this migration (`mesh_msgs`
   has no ROS 2 Jazzy release; not referenced in the ROS 1
-  `CMakeLists.txt`'s build list either).
+  `CMakeLists.txt`'s build list either). **Re-checked 2026-07-30**, not
+  just assumed still true: upstream `lvr-ros/mesh_msgs` (the only
+  `mesh_msgs` repo on GitHub matching this dependency) is still
+  `catkin`/ROS 1-only (`buildtool_depend: catkin`,
+  `message_generation`/`message_runtime`) — no ROS 2 branch, no rosdep
+  rule for `jazzy`, no apt package. Genuinely still blocked on an
+  external repo we don't own, not something to build ourselves within
+  this migration's scope.
 - ~~The `GenRadarImage` action and `GetRadarParams` service have real ROS 2
   interfaces but nothing serves them~~ — now served by `radar_simulator
   -p serve_action:=true` (see "`GetRadarParams`/`GenRadarImage` served"
