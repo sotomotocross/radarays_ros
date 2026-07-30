@@ -531,16 +531,23 @@ own process needs killing by its *child's* PID, not the wrapper's.
 
 ## What Is Not Migrated Yet
 
-- `mesh_publisher.cpp` — already unbuilt before this migration (`mesh_msgs`
+- ~~`mesh_publisher.cpp` — already unbuilt before this migration (`mesh_msgs`
   has no ROS 2 Jazzy release; not referenced in the ROS 1
-  `CMakeLists.txt`'s build list either). **Re-checked 2026-07-30**, not
-  just assumed still true: upstream `lvr-ros/mesh_msgs` (the only
-  `mesh_msgs` repo on GitHub matching this dependency) is still
+  `CMakeLists.txt`'s build list either)~~ — **ported 2026-07-30**, but
+  deliberately not as a 1:1 message port. Re-checked first, not just
+  assumed still true: upstream `lvr-ros/mesh_msgs` is still
   `catkin`/ROS 1-only (`buildtool_depend: catkin`,
-  `message_generation`/`message_runtime`) — no ROS 2 branch, no rosdep
-  rule for `jazzy`, no apt package. Genuinely still blocked on an
-  external repo we don't own, not something to build ourselves within
-  this migration's scope.
+  `message_generation`/`message_runtime`), no ROS 2 branch, no rosdep rule
+  for `jazzy` — genuinely still blocked, and its intended RViz1 consumer
+  (`rviz_map_plugin`/`mesh_tools`) has no ROS 2 release either, so a
+  faithful message-for-message port would be inert without also building
+  a new RViz2 plugin. Instead, re-targeted it at `visualization_msgs/
+  MarkerArray` (`TRIANGLE_LIST` per mesh) — the same message type
+  `ray_reflection_test.cpp` already publishes successfully, rendered
+  natively by RViz2 with zero extra plugins or external dependencies.
+  Runtime-verified: loads `testdata/two_walls_test.dae`, publishes real
+  triangle geometry matching the mesh's actual vertices (confirmed via
+  `ros2 topic echo /mesh_markers`), not just "builds without crashing."
 - ~~The `GenRadarImage` action and `GetRadarParams` service have real ROS 2
   interfaces but nothing serves them~~ — now served by `radar_simulator
   -p serve_action:=true` (see "`GetRadarParams`/`GenRadarImage` served"

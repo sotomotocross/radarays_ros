@@ -173,6 +173,23 @@ if(RADARAYS_ROS_BUILD_NODES)
     install(TARGETS ray_reflection_test
       DESTINATION lib/${PROJECT_NAME}
     )
+
+    add_executable(mesh_publisher
+      src/mesh_publisher.cpp
+    )
+    target_link_libraries(mesh_publisher
+      rmagine::core
+      rmagine::embree
+    )
+    ament_target_dependencies(mesh_publisher
+      rclcpp
+      visualization_msgs
+      geometry_msgs
+      std_msgs
+    )
+    install(TARGETS mesh_publisher
+      DESTINATION lib/${PROJECT_NAME}
+    )
   else()
     message(WARNING "rmagine::embree not found -- radar_simulator will not be built.")
   endif()

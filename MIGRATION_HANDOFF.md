@@ -2038,3 +2038,46 @@ explainer of how the 4 packages fit together, a hands-on runbook of
 concrete commands to see each part working today, and a guide for
 attaching these sensors to an existing Gazebo Harmonic sim (e.g. a vehicle
 simulator built independently of this migration).
+
+## Phase 7: `mesh_publisher.cpp` -- ported without its blocked dependency -- 2026-07-30
+
+The 2nd "known documented gap" was `mesh_publisher.cpp` -- unbuilt because
+its message type (`mesh_msgs`) and RViz consumer (`rviz_map_plugin`/
+`mesh_tools`) are both ROS 1-only upstream, confirmed still true by
+re-checking the actual upstream repo rather than trusting old notes (see
+`MIGRATION.md`'s "What Is Not Migrated Yet").
+
+Rather than leave it blocked on a dependency we don't own, re-targeted it:
+same rmagine-side logic (walk the `EmbreeScene`'s mesh/instance graph,
+compose transforms, extract vertices/faces), but publishing
+`visualization_msgs/msg/MarkerArray` (one `TRIANGLE_LIST` `Marker` per
+mesh) instead of `mesh_msgs::MeshGeometryStamped`. This is the same
+message type `ray_reflection_test.cpp` already publishes successfully --
+RViz2 renders it natively, no plugin needed, no ROS 1-only dependency
+anywhere in the chain.
+
+Ported the ROS side to `rclcpp` (`Node`/`declare_parameter`/
+`create_publisher`/`Rate`), kept the same `map_file`/`pre_transform`
+parameter shapes, added the executable to `CMakeLists.txt` next to
+`ray_reflection_test` (same `target_link_libraries`/
+`ament_target_dependencies` shape). Built clean, then runtime-verified for
+real: ran it against `testdata/two_walls_test.dae` and confirmed via
+`ros2 topic echo /mesh_markers` that the published triangle points
+(`x: 5.0, y: -2.0, z: 0.0`, ...) are the mesh's actual, correct vertices --
+not just "the process didn't crash."
+
+One thing noticed while testing, not a regression: sending this node a
+plain `kill -INT`/`SIGTERM` doesn't make it exit promptly (waited 8s, no
+exit). Checked whether this was something introduced by the port --
+`radar_simulator.cpp` and `ray_reflection_test.cpp` use the exact same
+`while(rclcpp::ok()) { ...; rclcpp::spin_some(node); }` shutdown pattern
+with no custom signal handling, so this is shared, pre-existing behavior
+across every standalone node in this package, not something new. The
+fixture harness (`radarays_ros_fixture_harness.py`'s `stop_process()`)
+already accounts for exactly this -- SIGINT, then a 5s timeout, then
+SIGKILL -- so nothing to fix here specifically for this port.
+
+`package.xml` already declared `visualization_msgs`/`geometry_msgs` (used
+by `ray_reflection_test`); no new dependency was needed. `mesh_msgs` was
+never declared there to begin with, confirming it was never really wired
+in even before this migration.
