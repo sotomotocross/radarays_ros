@@ -2081,3 +2081,97 @@ SIGKILL -- so nothing to fix here specifically for this port.
 by `ray_reflection_test`); no new dependency was needed. `mesh_msgs` was
 never declared there to begin with, confirming it was never really wired
 in even before this migration.
+
+## Phase 8: Independent continuation -- moved off forks entirely
+
+Everything through Phase 7 lived on forks (`sotomotocross/*`), tracking
+`uos/*` upstream, with 4 PRs open there. Two things changed that.
+
+**What changed upstream, and what we did about it.** amock (Alexander
+Mock, the real upstream maintainer) merged his own from-scratch rewrite of
+`rmagine_gazebo_plugins` into `uos/rmagine_gazebo_plugins:main` (2026-08-05),
+superseding our own port there entirely -- a full rewrite fixing the exact
+performance problem he'd flagged on our closed PR (`rmagine_gazebo_plugins#6`),
+plus a new Vulkan backend. Decided to continue independently rather than
+chase that merge: pulled his rewrite into our fork (verified: 30/30 `rmagine`
+tests, our own 4/4 `radarays_gazebo_plugins` fixtures), added the
+`shared_mutex`/`GetMapMutex()` locking his new map-sync architecture
+requires (missing on our side, nothing to race against before), and
+found + fixed two real, previously-undiscovered bugs in *his* new code
+along the way, root-caused with a `gdb` backtrace and a real CI log
+respectively, not guesses:
+- `ros_gz_bridge`'s `LaserScan` converter segfaults if `intensities` is
+  left empty while `ranges` is populated (every gz-sim built-in lidar
+  always fills both, so this edge case had never been exercised) --
+  fixed in `rmagine_gazebo_plugins`'s `sensor_model_publish.hpp`.
+- `RmagineOptixSensorInstance::RefreshSimulator()` never proactively
+  activated the map's CUDA context (the exact same class of bug already
+  root-caused and fixed on our own `radarays_optix_sensor_system.cpp`) --
+  confirmed via a real CI run's log showing `"Need to activate map
+  context"`, then verified `optix_fixture_dynamic` going from
+  consistently failing to passing after the fix.
+
+Both fixed directly in our own fork of `rmagine_gazebo_plugins`, since a
+fork means full write access, not just a read-only dependency.
+
+**The GitHub contribution problem, found and fixed.** Separately,
+discovered (empirically, via the GraphQL API, not assumed) that fork
+commits do not count toward GitHub's contribution graph *even when* an
+open PR references that branch -- only the one-time "opened a pull
+request" event counts, permanently, regardless of what happens
+afterward. Verified directly: `totalCommitContributions: 0` for the
+entire migration period despite dozens of real commits across all 4
+forks; `totalPullRequestContributions: 4` (one per PR ever opened, no
+matter its current state).
+
+Fixed by moving off forks entirely, for all 4 repos:
+1. Renamed each current fork aside: `sotomotocross/<repo>` ->
+   `sotomotocross/<repo>-uos-fork`. GitHub redirects old URLs
+   automatically, and the 3 still-open PRs to `uos/*`
+   (`rmagine#24`, `radarays_gazebo_plugins#4`, `radarays_ros#6`) kept
+   tracking correctly through the rename -- confirmed via `gh pr view`
+   before and after, not assumed. Left those 3 open deliberately (not
+   pursuing merge, but also not closing something that costs nothing to
+   leave open); `rmagine_gazebo_plugins#6` was already closed by amock.
+2. Created fresh, empty, non-fork public repos at the *same* names
+   (`sotomotocross/rmagine`, etc.) -- deliberately not renamed, to avoid
+   a large, purely-cosmetic rename cascade through every dependent
+   package's `find_package()`/`<depend>` across the whole workspace (the
+   ROS package name and the GitHub repo name are two separate things;
+   only the latter needed to change, and in the end didn't need to).
+3. Pushed each repo's `ros2-jazzy-harmonic` branch content to the new
+   repo as `main` (the new repo's only/default branch -- no more reason
+   to keep the old branch name once there's no upstream `main` sharing
+   the slot). Verified: `totalCommitContributions` went from 0 to **32**
+   across the 4 new repos, confirming this retroactively counts the
+   *entire* past month of real work, not just future commits (GitHub
+   computes the graph from current repo state, not a snapshot frozen at
+   push time).
+4. Renamed local branches (`ros2-jazzy-harmonic` -> `main`) and the local
+   `fork` git remote (-> `mine`, since it's not a fork anymore) in every
+   repo's working tree, fixed upstream-tracking accordingly. The old
+   `origin` remote (`uos/*`) and a preserved `upstream-main` local branch
+   are kept in every repo, in case upstream is ever worth diffing against
+   again.
+
+**License and attribution -- checked, not assumed.** All 4 repos are
+BSD-3-Clause, with real, named copyright holders (Alexander Mock
+personally for `rmagine`/`radarays_ros`; Osnabrück University Knowledge
+Based Systems Group for `rmagine_gazebo_plugins`/`radarays_gazebo_plugins`).
+BSD-3-Clause requires keeping the license text and copyright notice
+intact in redistributions, and forbids using the original holders' names
+to endorse a derived product -- it does not require a documentation
+notice, but doing so anyway is the honest thing here, given this is
+overwhelmingly a continuation of their original work, not a rewrite from
+scratch. Every `LICENSE` file was left completely untouched (no attempt
+to claim original authorship). Added instead: an "Origin" section near
+the top of each repo's `README.md` naming the original authors and this
+continuation explicitly, plus a second `<maintainer>`/`<author>` tag in
+each `package.xml` alongside (not replacing) Alexander Mock's own entry.
+
+**Practical effect for anyone picking this workspace up fresh**: the 4
+`sotomotocross/*` repos are the real, current, independent line of
+development -- not forks, no upstream tracking branch, `main` as the
+only/default branch. The `<repo>-uos-fork` repos are frozen archives of
+the pre-2026-08-31 fork-based history, kept only because 3 PRs against
+`uos/*` still point at them.

@@ -2,9 +2,19 @@
 
 Rotating FMCW radar simulation based on ray-tracing. This package contains all the tools that has been used to simulate radar data and compare it to real sensor data.
 
+## Origin
+
+This is an independent ROS 2 Jazzy continuation of
+[uos/radarays_ros](https://github.com/uos/radarays_ros), originally
+authored by Alexander Mock. The ROS 2 Jazzy port and subsequent fixes
+here are by [Sotiris Aspragkathos](https://github.com/sotomotocross), not
+affiliated with the original author. See [MIGRATION_HANDOFF.md](MIGRATION_HANDOFF.md)
+for the full story of why this continues here independently rather than
+as an open pull request.
+
 ## Migration Status
 
-This package is being migrated to ROS 2 Jazzy / `ament_cmake`. See
+This package has been migrated to ROS 2 Jazzy / `ament_cmake`. See
 [MIGRATION.md](MIGRATION.md) for details.
 
 Current state:
