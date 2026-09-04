@@ -58,48 +58,102 @@ in a profile.
 
 ## 3. Attach the sensor plugin(s) to your vehicle's own SDF model
 
-Inside your vehicle's `<model>`, on whichever `<link>` is the sensor mount
-point (this is the exact, verified structure from
-`radarays_gazebo_plugins/worlds/gz_static_radar_cpu.sdf`):
+**Note (2026-08-31): rmagine's own upstream rewrite changed this shape**
+after this guide was first written — `rmagine_embree_sensor_system` is no
+longer a per-model plugin with flat params. It's now a single bare
+world-level factory plugin (like the map system) that auto-discovers any
+`<sensor type="custom" gz:type="rmagine_embree">` element anywhere in the
+world; each sensor's own params (`map_key`/`frame`/`topic_scan`/
+`topic_points`/`update_rate`/the lidar scan geometry) live on that
+`<sensor>` element itself. `radarays_embree_sensor_system` (the radar-
+image one) is untouched — still a plain per-model `<plugin>` block. This
+is the exact, verified structure from
+`radarays_gazebo_plugins/worlds/gz_static_radar_cpu.sdf`:
 
 ```xml
-<model name="my_vehicle">
+<world name="my_world">
   ...
-  <plugin name="rmagine_embree_sensor_system" filename="librmagine_embree_sensor_system.so">
-    <map_key>default</map_key>
-    <frame>radar_link</frame>          <!-- must match a real <link> name below -->
-    <topic_scan>my_vehicle/radar/scan</topic_scan>
-    <topic_points>my_vehicle/radar/points</topic_points>
-    <update_rate>4</update_rate>
-    <min_angle>-1.0472</min_angle>
-    <max_angle>1.0472</max_angle>
-    <samples>400</samples>
-    <range_min>0.2</range_min>
-    <range_max>100.0</range_max>
-  </plugin>
-  <plugin name="radarays_embree_sensor_system" filename="libradarays_embree_sensor_system.so">
-    <map_key>default</map_key>
-    <frame>radar_link</frame>
-    <topic_image>my_vehicle/radar/image</topic_image>
-    <update_rate>4</update_rate>
-    <min_angle>-1.0472</min_angle>
-    <max_angle>1.0472</max_angle>
-    <samples>400</samples>
-    <range_max>100.0</range_max>
-    <n_cells>1024</n_cells>
-  </plugin>
-  <link name="radar_link">
+  <!-- one factory, direct child of <world>, discovers every rmagine_embree
+       <sensor> anywhere below -- same one-per-world rule as the map system -->
+  <plugin name="rmagine_embree_sensor_system" filename="librmagine_embree_sensor_system.so"/>
+
+  <model name="my_vehicle">
     ...
-  </link>
-</model>
+    <plugin name="radarays_embree_sensor_system" filename="libradarays_embree_sensor_system.so">
+      <map_key>default</map_key>
+      <frame>radar_link</frame>
+      <topic_image>my_vehicle/radar/image</topic_image>
+      <update_rate>4</update_rate>
+      <min_angle>-1.0472</min_angle>
+      <max_angle>1.0472</max_angle>
+      <samples>400</samples>
+      <range_max>100.0</range_max>
+      <n_cells>1024</n_cells>
+    </plugin>
+    <link name="radar_link">
+      ...
+      <sensor name="radar_lidar_sensor" type="custom" gz:type="rmagine_embree">
+        <map_key>default</map_key>
+        <frame>radar_link</frame>
+        <topic_scan>my_vehicle/radar/scan</topic_scan>
+        <topic_points>my_vehicle/radar/points</topic_points>
+        <update_rate>4</update_rate>
+        <lidar>
+          <scan>
+            <horizontal>
+              <min_angle>-1.0472</min_angle>
+              <increment>0.0052486216</increment>
+              <samples>400</samples>
+            </horizontal>
+          </scan>
+          <range>
+            <min>0.2</min>
+            <max>100.0</max>
+          </range>
+        </lidar>
+      </sensor>
+    </link>
+  </model>
+</world>
 ```
 
 Namespace `topic_scan`/`topic_points`/`topic_image` per-vehicle (as above)
 if you might ever have more than one sensor-carrying model in the same
-world — these are plain global ROS 2 topic names, nothing auto-namespaces
-them for you. `map_key` only needs to change from `"default"` if you
+world — these are plain global topic names, nothing auto-namespaces them
+for you. `map_key` only needs to change from `"default"` if you
 deliberately want more than one independent map in the same world (e.g.
 different regions); for a single vehicle in one world, leave it.
+
+**`radar/scan` and `radar/points` are gz-transport-native, not ROS —
+you need a bridge.** Unlike `radarays_embree_sensor_system`'s
+`/radar/image` (published directly via `rclcpp`, nothing extra needed),
+`rmagine_embree_sensor_system` publishes over native `gz::transport`
+only. To get `/scan`/`/points` into ROS 2, run a `ros_gz_bridge
+parameter_bridge` alongside your sim, with an explicit `GZ_TO_ROS`
+direction (the plain `topic@ros_type@gz_type` CLI form defaults to
+bidirectional and can create feedback-loop artifacts — not what you
+want here). Real, working example, from
+`rmagine_gazebo_plugins/tests/testdata/embree_harmonic/ros_gz_bridge_fixtures.yaml`:
+
+```yaml
+- ros_topic_name: "/my_vehicle/radar/scan"
+  gz_topic_name: "my_vehicle/radar/scan"
+  ros_type_name: "sensor_msgs/msg/LaserScan"
+  gz_type_name: "gz.msgs.LaserScan"
+  direction: GZ_TO_ROS
+
+- ros_topic_name: "/my_vehicle/radar/points"
+  gz_topic_name: "my_vehicle/radar/points"
+  ros_type_name: "sensor_msgs/msg/PointCloud2"
+  gz_type_name: "gz.msgs.PointCloudPacked"
+  direction: GZ_TO_ROS
+```
+
+then `ros2 run ros_gz_bridge parameter_bridge --ros-args -p
+config_file:=<path-to-that-yaml>`, or add it as a `Node(package=
+"ros_gz_bridge", executable="parameter_bridge", ...)` action in your
+launch file — see `radarays_gazebo_plugins/launch/gz_static_radar_cpu.launch.py`
+for a real working launch-file example of exactly this.
 
 ## 4. Give your environment real materials (this matters for a marine sim specifically)
 
