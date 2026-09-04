@@ -336,6 +336,20 @@ install(
   RENAME radaray_opti
 )
 
+# Converts a real, material-aware radar polar image (from
+# radarays_embree_sensor_system/radarays_optix_sensor_system) into a
+# detection-quality LaserScan via per-angle intensity thresholding --
+# the leading-edge detection a real radar's own signal-processing chain
+# does. See the script's own header comment for the full rationale (why
+# neither rmagine's raw geometric /scan nor the raw image alone are
+# suitable for obstacle detection with real sea-clutter suppression).
+install(
+  PROGRAMS
+    scripts/radar_image_to_scan.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME radar_image_to_scan
+)
+
 # Launch files + example params/materials configs -- previously not
 # installed at all (gap #1 in MIGRATION.md), meaning `ros2 launch
 # radarays_ros ...` had nothing usable regardless of whether a .launch.py
