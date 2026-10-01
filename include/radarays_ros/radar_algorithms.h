@@ -177,7 +177,23 @@ inline float back_reflection_shader(
     // incidence_angle -> 0 - pi/2
     // I_diffuse 1 -> 0
     float IdotR = cos(incidence_angle);
-    float I_diffuse = 1.0;
+    // Lambertian, as the comment above describes. This was hardcoded to 1.0,
+    // so IdotR was computed and then used only for the specular lobe and the
+    // diffuse term had no angular dependence at all -- a surface returned the
+    // same diffuse energy at grazing incidence as head-on. Note this alone
+    // does not change a per-bearing-normalised image, since it scales every
+    // material by the same cos(theta); it matters once the image carries
+    // absolute amplitude.
+    //
+    // Magnitude, not a clamp. get_incidence_angle() is called at both call
+    // sites with the raw surface normal and nothing flips it, so a facet
+    // whose normal is wound the other way yields incidence_angle > pi/2 and a
+    // negative cosine. Clamping those to zero silences them, which is wrong
+    // here: the converted .obj hull meshes have inconsistent winding, and
+    // backscatter toward the source depends on the angle between ray and
+    // surface, not on which side the normal was drawn. Measured: clamping
+    // removed the 227 m hull from the image entirely.
+    float I_diffuse = fabs(IdotR);
     float I_specular = pow(IdotR, specular_exp);
 
     // polynom
